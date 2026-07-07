@@ -1,0 +1,21 @@
+1.Pg_stat_statements
+2.Sql&perl tests::
+
+cd /Users/dariakorsun/PpgPro/postgres/contrib/pg_stat_statements
+make check
+
+3.Start tests::
+
+mkdir build_with_tap
+cd build_with_tap
+../postgres/configure --enable-cassert --enable-tap-tests --prefix=$PWD/install
+make install --jobs=10
+fish_add_path (pwd)/install/bin
+
+make -j10 -C contrib/pg_stat_statements install
+/Users/dariakorsun/PpgPro/build_with_tap/contrib/pg_stat_statements
+make check 
+
+4.Cheak:: all tests pasted
+5.Delete any letter and return to third point
+6.Cheak results:: fail tests

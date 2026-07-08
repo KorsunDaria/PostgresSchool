@@ -1,0 +1,68 @@
+Добавить вспомогательный процесс postgresql, 
+который печатает "hello" каждые 5 секунд.
+
+#ifndef HELLO_WORKER_H
+#define HELLO_WORKER_H
+
+/* Главная функция нашего фонового процесса */
+extern void hello_worker(Datum main_arg);
+
+#endif /* HELLO_WORKER_H */
+
+#include "postgres.h"
+
+#include "postmaster/bgworker.h"
+#include "postmaster/interrupt.h"
+#include "storage/latch.h"
+#include "miscadmin.h"
+
+ void hello_worker(Datum main_arg)
+ {
+    pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
+    pqsignal(SIGHUP, SignalHandlerForConfigReload);
+
+    BackgroundWorkerUnblockSignals();
+
+    while (!ShutdownRequestPending)
+    {
+        int rc;
+        elog(LOG, "Hello");
+
+        rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, 10000L, PG_WAIT_EXTENSION);
+      
+        ResetLatch(MyLatch);
+
+        if (rc & WL_LATCH_SET)
+        {
+            CHECK_FOR_INTERRUPTS();
+        }
+    }
+    
+ }
+
+
+    postmaster.c::927
+    
+    BackgroundWorker worker;
+
+	memset(&worker, 0, sizeof(worker));
+	snprintf(worker.bgw_name, BGW_MAXLEN, "my worker");
+	snprintf(worker.bgw_type, BGW_MAXLEN, "my worker");
+	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
+	worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
+	worker.bgw_restart_time = 10;  /* restart after 1s if it dies */
+	snprintf(worker.bgw_library_name, BGW_MAXLEN, "postgres"); /* module name */
+	snprintf(worker.bgw_function_name, BGW_MAXLEN, "hello_worker"); /* function name */
+	worker.bgw_main_arg = (Datum)0;
+	worker.bgw_notify_pid = 0;
+
+ 	RegisterBackgroundWorker(&worker);
+
+    	hello_worker.o
+
+
+    bgworker::139
+    {
+		.fn_name = "hello_worker",
+		.fn_addr = hello_worker
+	}

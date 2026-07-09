@@ -1,0 +1,122 @@
+* Что будет если WAL-запись не помещается в свободную часть сегмента?  
+
+1)Часть записи, которая поместилась, записывается в конец текущей страницы.
+2) На следующей странице выставляется флаг XLP_FIRST_IS_CONTREC в заголовке.
+3) Остаток записи продолжается с начала данных следующей страницы.
+4) Это может повторяться несколько раз, если запись очень большая
+
+* Создать кластер, выполнить VACUUM и найти запись об этом 
+  с помощью утилиты pg_waldump
+
+initdb -D master_daat
+pg_ctl -D master_daat -l master.log start
+
+
+CREATE TABLE test_vac (id int);
+INSERT INTO test_vac VALUES (1);
+DELETE FROM test_vac;
+VACUUM VERBOSE test_vac;
+SELECT pg_walfile_name(pg_current_wal_lsn());
+
+\q
+pg_waldump /Users/dariakorsun/PpgPro/postgres/master_daat/pg_wal/000000010000000000000001 | grep -i vacuum     
+
+VACUUM_CLEANUP , isCatalogRel: F, vm_flags: 0x03, nplans: 0, 
+nredirected: 0, ndead: 0, nunused: 6, unused: [1, 2, 3, 4, 5, 7], 
+blkref #0: rel 1663/1/2619 blk 18, blkref #1: rel 1663/1/2619 fork vm blk 0
+
+* Создать свою кастомную запись “breakpoint” 
+(или любую другую с интересным поведением) в журнал предзаписи, 
+которая в процессе восстановления субд единоразово вызывает ошибку
+
+#include "postgres.h"
+#include "fmgr.h"
+#include "access/xlog_internal.h"
+#include "access/xloginsert.h"
+#include "utils/elog.h"
+
+PG_MODULE_MAGIC;
+
+#define RM_BREAKPOINT_ID    128
+
+void _PG_init(void);
+PG_FUNCTION_INFO_V1(insert_breakpoint_wal);
+
+static void
+breakpoint_desc(StringInfo buf, XLogReaderState *record)
+{
+    appendStringInfoString(buf, "Custom WAL breakpoint record");
+}
+
+static const char *
+breakpoint_identify(uint8 info)
+{
+    return "MY_BREAKPOINT_ACTION";
+}
+
+static void
+breakpoint_redo(XLogReaderState *record)
+{
+    elog(LOG, "[REDO] === Брейкпоинт успешно прочитан! База идет дальше ===");
+}
+
+
+static void
+breakpoint_mask(StringInfo buf, BlockNumber blkno) {}
+
+
+static const RmgrData breakpoint_rmgr = {
+    .rm_name = "wal_breakpoint",
+    .rm_redo = breakpoint_redo,
+    .rm_desc = breakpoint_desc,       
+    .rm_identify = breakpoint_identify,
+
+};
+
+void
+_PG_init(void)
+{
+    RegisterCustomRmgr(RM_BREAKPOINT_ID, &breakpoint_rmgr);
+}
+
+Datum
+insert_breakpoint_wal(PG_FUNCTION_ARGS)
+{
+    XLogBeginInsert();
+    XLogRegisterData("BREAK", 5);
+    XLogInsert(RM_BREAKPOINT_ID, 0x10);
+
+    elog(NOTICE, "Корректная запись успешно добавлена в WAL!");
+    PG_RETURN_VOID();
+}
+
+
+MODULES = wal_breakpoint
+
+PG_CONFIG = pg_config
+PGXS := $(shell $(PG_CONFIG) --pgxs)
+
+include $(PGXS)
+
+my_wal: make && make install
+
+shared_preload_libraries = 'wal_breakpoint' 
+
+postgress: 
+initdb -D data 
+pg_ctlc -d data start 
+psql -d postgres
+
+CREATE FUNCTION insert_breakpoint_wal() RETURNS void 
+AS 'wal_breakpoint', 'insert_breakpoint_wal' LANGUAGE C STRICT;
+
+SELECT insert_breakpoint_wal();     
+
+\q
+
+pg_ctl -D data stop -m immediate
+
+pg_ctl -D data start
+
+2026-07-09 14:45:35.671 +07 [5873] LOG: 
+[REDO] === Брейкпоинт успешно прочитан! База идет дальше ===

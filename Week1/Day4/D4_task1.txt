@@ -1,0 +1,27 @@
+Что требуется сделать:
+
+1) расширить лексер и/или грамматику PostgreSQL так, чтобы слова ALWAYS и NEVER
+распознавались как допустимые элементы SQL-синтаксиса;
+2) встроить их в существующий синтаксис булевых выражений;
+3) обеспечить, чтобы на выходе парсинга и/или parse analysis эти конструкции превращались в
+обычные булевы константы PostgreSQL;
+4) проверить, что новый синтаксис работает в WHERE , HAVING и других местах, где допустимы
+булевы выражения.
+
+src/include/parser/kwlist.h :: +PG_KEYWORD("never", NEVER_P, RESERVED_KEYWORD, BARE_LABEL)
+src/include/parser/kwlist.h :: +PG_KEYWORD("always", ALWAYS, RESERVED_KEYWORD, BARE_LABEL) изменено на PG_KEYWORD("always", ALWAYS, RESERVED_KEYWORD, BARE_LABEL)
+
+src/backend/parser/gram.y :: %token <keyword> :: +NEVER_P
+src/backend/parser/gram.y :: unreserved_keyword :: -ALWAYS
+src/backend/parser/gram.y :: reserved_keyword :: +ALWAYS +NEVER_P
+src/backend/parser/gram.y :: bare_label_keyword:: +NEVER_P
+
+src/backend/parser/gram.y :: AexprConst :: +NEVER_P { $$ = makeBoolAConst(false, @1); }
+src/backend/parser/gram.y :: AexprConst :: +ALWAYS { $$ = makeBoolAConst(true, @1); }
+
+psql -d postgres
+CREATE TABLE b(a bool);
+insert into b values(true);
+insert into b values(false);
+select * from b where a=never;
+select * from b where a=always;

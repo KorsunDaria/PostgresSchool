@@ -1,0 +1,231 @@
+Что требуется сделать:
+
+1) реализовать обход внутреннего дерева выражений PostgreSQL;
+2) находить узлы булевых операций AND и OR ;
+3) распознавать частные случаи с тривиальными константами TRUE и FALSE ;
+4) заменять такие узлы на упрощённое поддерево;
+5) встроить этот проход в конвейер обработки запроса так, чтобы он выполнялся автоматически.
+
+/Users/dariakorsun/PpgPro/postgres/src/include/rewrite/rewriteBoolSimplify.h
+
+#ifndef REWRITE_BOOL_SIMPLIFY_H
+#define REWRITE_BOOL_SIMPLIFY_H
+
+#include "nodes/parsenodes.h"
+
+extern void simplify_query_quals(Query *query);
+
+#endif							/* REWRITE_BOOL_SIMPLIFY_H */
+
+
+/Users/dariakorsun/PpgPro/postgres/src/backend/rewrite/rewriteBoolSimplify.c
+
+#include "postgres.h"
+
+#include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
+#include "rewrite/rewriteBoolSimplify.h"
+#include "catalog/pg_type_d.h"
+
+
+static Node *simplify_bool_mutator(Node *node, void *context);
+static Node *simplify_bool_expr(BoolExpr *expr);
+
+
+static Node *
+simplify_bool_expr(BoolExpr *expr)
+{
+	List	   *newargs = NIL;
+	ListCell   *lc;
+
+	Assert(expr->boolop == AND_EXPR || expr->boolop == OR_EXPR);
+
+	foreach(lc, expr->args)
+	{
+		Node	   *arg = (Node *) lfirst(lc);
+
+		if (IsA(arg, Const))
+		{
+			Const	   *c = (Const *) arg;
+
+			
+			if (c->consttype == BOOLOID && !c->constisnull)
+			{
+				bool		val = DatumGetBool(c->constvalue);
+
+				if ((expr->boolop == AND_EXPR && val == false) ||
+					(expr->boolop == OR_EXPR && val == true))
+					return (Node *) makeBoolConst(val, false);
+				continue;
+			}
+		}
+
+		newargs = lappend(newargs, arg);
+	}
+
+	if (newargs == NIL)
+		return (Node *) makeBoolConst(expr->boolop == AND_EXPR, false);
+
+	if (list_length(newargs) == 1)
+		return (Node *) linitial(newargs);
+
+	expr->args = newargs;
+	return (Node *) expr;
+}
+
+static Node *
+simplify_bool_mutator(Node *node, void *context)
+{
+	if (node == NULL)
+		return NULL;
+
+	if (IsA(node, BoolExpr))
+	{
+		BoolExpr   *expr = (BoolExpr *) node;
+
+		if (expr->boolop == AND_EXPR || expr->boolop == OR_EXPR)
+		{
+			BoolExpr   *copy = makeNode(BoolExpr);
+			ListCell   *lc;
+			List	   *newargs = NIL;
+
+			copy->boolop = expr->boolop;
+			copy->location = expr->location;
+
+			
+			foreach(lc, expr->args)
+			{
+				Node	   *newarg = simplify_bool_mutator((Node *) lfirst(lc),
+															context);
+
+				newargs = lappend(newargs, newarg);
+			}
+			copy->args = newargs;
+
+			return simplify_bool_expr(copy);
+		}
+	}
+
+	return expression_tree_mutator(node, simplify_bool_mutator, context);
+}
+
+void
+simplify_query_quals(Query *query)
+{
+	if (query->jointree != NULL)
+		query->jointree = (FromExpr *)
+			simplify_bool_mutator((Node *) query->jointree, NULL);
+
+	if (query->havingQual != NULL)
+		query->havingQual =
+			simplify_bool_mutator(query->havingQual, NULL);
+}
+
+/Users/dariakorsun/PpgPro/postgres/src/backend/rewrite/rewriteHandler.c
+
+4820:: 	simplify_query_quals(query);
+
+/Users/dariakorsun/PpgPro/postgres/src/backend/rewrite/Makefile
+
+24::	rewriteBoolSimplify.o 
+
+- postgress/b make && make install
+- cd ../ && initdb -d data
+- psql -D postgress
+- create table t(a int)
+- select * from t where true and a>10
+
+
+
+      :quals 
+         {OPEXPR 
+         :opno 521 
+         :opfuncid 147 
+         :opresulttype 16 
+         :opretset false 
+         :opcollid 0 
+         :inputcollid 0 
+         :args (
+            {VAR 
+            :varno 1 
+            :varattno 1 
+            :vartype 23 
+            :vartypmod -1 
+            :varcollid 0 
+            :varnullingrels (b)
+            :varlevelsup 0 
+            :varreturningtype 0 
+            :varnosyn 1 
+            :varattnosyn 1 
+            :location 31
+            }
+            {CONST 
+            :consttype 23 
+            :consttypmod -1 
+            :constcollid 0 
+            :constlen 4 
+            :constbyval true 
+            :constisnull false 
+            :location 35 
+            :constvalue 4 [ 10 0 0 0 0 0 0 0 ]
+            }
+         )
+         :location 33
+         }
+      }
+   
+
+   :quals 
+         {BOOLEXPR 
+         :boolop and 
+         :args (
+            {CONST 
+            :consttype 16 
+            :consttypmod -1 
+            :constcollid 0 
+            :constlen 1 
+            :constbyval true 
+            :constisnull false 
+            :location 22 
+            :constvalue 1 [ 1 0 0 0 0 0 0 0 ]
+            }
+            {OPEXPR 
+            :opno 521 
+            :opfuncid 147 
+            :opresulttype 16 
+            :opretset false 
+            :opcollid 0 
+            :inputcollid 0 
+            :args (
+               {VAR 
+               :varno 1 
+               :varattno 1 
+               :vartype 23 
+               :vartypmod -1 
+               :varcollid 0 
+               :varnullingrels (b)
+               :varlevelsup 0 
+               :varreturningtype 0 
+               :varnosyn 1 
+               :varattnosyn 1 
+               :location 31
+               }
+               {CONST 
+               :consttype 23 
+               :consttypmod -1 
+               :constcollid 0 
+               :constlen 4 
+               :constbyval true 
+               :constisnull false 
+               :location 35 
+               :constvalue 4 [ 10 0 0 0 0 0 0 0 ]
+               }
+            )
+            :location 33
+            }
+         )
+         :location 27
+         }
+      }
+
+      как и надо пропал блок отвечающий за true

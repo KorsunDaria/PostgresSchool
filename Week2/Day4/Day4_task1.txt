@@ -1,0 +1,159 @@
+Настроть потоковую реплкацю
+
+initdb -D ./primary -U postgres --locale=C --encoding=UTF8
+
+listen_addresses = '*'
+port = 5432
+wal_level = replica
+max_wal_senders = 10
+max_replication_slots = 10
+hot_standby = on
+
+./primary/pg_hba.conf::host replication postgres 127.0.0.1/32 trust
+
+pg_basebackup -h 127.0.0.1 -p 5432 -U postgres \
+  -D ./standby1 -P -v -R -X stream \
+  -S standby1_slot -C
+
+./standby1/postgresql.conf::
+
+port = 5433
+hot_standby = on
+
+psql -U postgres -d postgres -p 5432
+psql -U postgres -d postgres -p 5433
+
+create table t(id int); insert into t values (1);
+select * from t
+
+Настроть каскадную реплкацю
+
+pg_basebackup -h 127.0.0.1 -p 5433 -U postgres \
+  -D ~/repl_lab/standby2 -P -v -R -X stream \
+  -S standby2_slot -C
+
+port = 5434
+hot_standby = on
+
+pg_ctl -D ./standby2 -l ./standby2.log start (wal sender )
+
+psql -U postgres -h 127.0.0.1 -p 5432 -c "insert into t values (2);"
+psql -U postgres -h 127.0.0.1 -p 5434 -c "select * from t order by id;"
+
+Настроть снхронную реплкацю (кворумную прортетную) +
+убедться, что она работает
+
+pg_basebackup -h 127.0.0.1 -p 5432 -U postgres \
+  -D ./standby3 -P -v -R -X stream \
+  -S standby3_slot -C
+
+./standby3/postgresql.conf:: port = 5435, hot_standby = on
+
+/Users/dariakorsun/pg/standby1/postgresql.auto.conf
+application_name=s1
+
+/Users/dariakorsun/pg/standby3/postgresql.auto.conf
+application_name=s3
+
+/Users/dariakorsun/pg/primary/postgresql.conf
+synchronous_standby_names = 'FIRST 1 (s1, s3)' 
+
+psql -U postgres -h 127.0.0.1 -p 5432 -c "select application_name, sync_state, sync_priority from pg_stat_replication;"
+
+ application_name | sync_state | sync_priority 
+------------------+------------+---------------
+ s3               | potential  |             2
+ s1               | sync       |             1
+(2 rows)
+
+pg_ctl -D ./standby1 stop
+pg_ctl -D ./standby3 stop
+
+begin;
+insert into t values (100);
+commit;  --зависает
+
+// pg_ctl -D ./standby3 start - уберет зависание
+
+/Users/dariakorsun/pg/primary/postgresql.conf
+
+synchronous_standby_names = 'ANY 1 (s1, s3)'
+
+psql -U postgres -h 127.0.0.1 -p 5432 -c "select application_name, sync_state, sync_priority from pg_stat_replication;"
+application_name | sync_state | sync_priority 
+------------------+------------+---------------
+ s1               | quorum     |             1
+ s3               | quorum     |             1
+(2 rows)
+
+pg_basebackup -h 127.0.0.1 -p 5432 -U postgres \
+  -D ./standby4 -P -v -R -X stream \
+  -S standby4_slot -C
+
+/Users/dariakorsun/pg/standby4/postgresql.conf
+
+port = 5436	
+
+psql -U postgres -h 127.0.0.1 -p 5432 -c "insert into t values (999);"
+pg_ctl -D ./standby4 stop
+
+psql -U postgres -h 127.0.0.1 -p 5432 -c "insert into t values (999);"- завис
+
+Попробовать воспровест конфлкты в реме Hot Standby
+
+/Users/dariakorsun/pg/primary/postgresql.conf
+max_standby_streaming_delay = 5000    # 5 секунд
+autovacuum_naptime = 5s 
+
+/Users/dariakorsun/pg/standby1/postgresql.conf
+hot_standby_feedback = off
+
+psql -U postgres -h 127.0.0.1 -p 5432 -c "drop table if exists t2; create table t2(id int primary key, data text); 
+insert into t2 values (1, 'old');"
+
+psql -U postgres -h 127.0.0.1 -p 5433
+begin transaction isolation level repeatable read;
+select * from t2 where id = 1;
+
+psql -U postgres -h 127.0.0.1 -p 5432 -c "update t2 set data = 'new' where id = 1;"
+psql -U postgres -h 127.0.0.1 -p 5432 -c "vacuum t2;"
+
+select * from t2 where id = 1;
+FATAL:  terminating connection due to conflict with recovery
+DETAIL:  User query might have needed to see row versions that must be removed.
+HINT:  In a moment you should be able to reconnect to the database and repeat your command.
+server closed the connection unexpectedly
+        This probably means the server terminated abnormally
+        before or while processing the request.
+The connection to the server was lost. Attempting reset: Succeeded.
+postgres=# 
+
+
+Попробовать почнть конфлкт с помощью слота реплкации
+
+/Users/dariakorsun/pg/standby1/postgresql.conf
+
+hot_standby_feedback = on
+
+psql -U postgres -h 127.0.0.1 -p 5433
+begin transaction isolation level repeatable read;
+select * from t2 where id = 1;
+
+psql -U postgres -h 127.0.0.1 -p 5432 -c "update t2 set data = 'newer' where id = 1;"
+psql -U postgres -h 127.0.0.1 -p 5432 -c "vacuum verbose t2;"
+
+tuples: 1 removed, 2 remain, 1 are dead but not yet removable
+
+ostgres=*# commit
+postgres-*# ;
+COMMIT
+postgres=# select * from t2 where id = 1;                                                                                          
+ id |  data  
+----+--------
+  1 | newer2
+(1 row)
+
+uples: 2 removed, 2 remain, 1 are dead but not yet removable
+
+Рассмотреть, как выглядят в коде переходы меду состояням у
+процессов walsender walreceiver

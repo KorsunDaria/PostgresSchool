@@ -1,0 +1,36 @@
+dariakorsun@MacBook-Pro-Daria-2 ~/P/s/W/Day2 (main) [SIGINT]> gcc -O1 Day2_task1.c -o Day2_task1
+dariakorsun@MacBook-Pro-Daria-2 ~/P/s/W/Day2 (main)> ./Day2_task1
+sum1 result: 99000559357, time taken: 1.342767 seconds
+sum4 result: 99000559357, time taken: 0.598187 seconds
+dariakorsun@MacBook-Pro-Daria-2 ~/P/s/W/Day2 (main)> gcc -O2 Day2_task1.c -o Day2_task1
+dariakorsun@MacBook-Pro-Daria-2 ~/P/s/W/Day2 (main)> ./Day2_task1
+sum1 result: 99000559357, time taken: 0.561694 seconds
+sum4 result: 99000559357, time taken: 0.232145 seconds
+dariakorsun@MacBook-Pro-Daria-2 ~/P/s/W/Day2 (main)> gcc -O3 Day2_task1.c -o Day2_task1
+dariakorsun@MacBook-Pro-Daria-2 ~/P/s/W/Day2 (main)> ./Day2_task1
+sum1 result: 99000559357, time taken: 0.592676 seconds
+sum4 result: 99000559357, time taken: 0.464531 seconds
+dariakorsun@MacBook-Pro-Daria-2 ~/P/s/W/Day2 (main)> gcc -Ofast Day2_task1.c -o Day2_task1
+clang: warning: argument '-Ofast' is deprecated; use '-O3 -ffast-math' for the same behavior, or '-O3' to enable only conforming optimizations [-Wdeprecated-ofast]
+dariakorsun@MacBook-Pro-Daria-2 ~/P/s/W/Day2 (main)> ./Day2_task1
+sum1 result: 99000559357, time taken: 1.016107 seconds
+sum4 result: 99000559357, time taken: 0.957384 seconds
+dariakorsun@MacBook-Pro-Daria-2 ~/P/s/W/Day2 (main)> gcc -Os Day2_task1.c -o Day2_task1
+dariakorsun@MacBook-Pro-Daria-2 ~/P/s/W/Day2 (main)> ./Day2_task1
+sum1 result: 99000559357, time taken: 1.235325 seconds
+sum4 result: 99000559357, time taken: 1.011167 seconds
+
+
+
+Идея: берём сценарий с высокой конкуренцией за одну и ту же горячую 
+строку/spinlock — UPDATE counters SET value = value + 1 WHERE id = 1, 
+запущенный сразу несколькими клиентами 
+(pgbench -f update_hot_row.sql -c N -j N, где N ≥ числа физических ядер). 
+ри включённом SMT два логических потока одного физического ядра одновременно 
+пытаются менять одну и ту же строку/буфер, из-за чего растёт время удержания 
+spinlock и cache-line bouncing между потоками — полезная работа на такт 
+CPU падает. TPS снижается, потому что транзакции чаще стоят в очереди за 
+блокировкой, а не выполняются параллельно. CPU utilization при этом тоже падает
+(а не растёт), потому что часть логических CPU простаивает в 
+busy-wait/спине на блокировке вместо реальных вычислений, и планировщик 
+реже успевает выдать им полезную работу. 
